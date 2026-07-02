@@ -6,7 +6,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from detector import scan_text, compute_risk_score, generate_summary, redact_text, RISK_LEVELS
-from llm_qa import ask_question
+from llm_qa import ask_question, generate_ai_summary
 import theme
 
 # ---------------------------------------------------------------------
@@ -19,7 +19,7 @@ import theme
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-st.set_page_config(page_title="Secureguard — Sensitive Data Intelligence", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="SecureGuard — Sensitive Data Intelligence", layout="wide", page_icon="🛡️")
 st.markdown(theme.CSS, unsafe_allow_html=True)
 
 
@@ -58,7 +58,7 @@ with st.sidebar:
         theme.clean("""
         <div class="vl-brand">
             <div class="vl-brand-mark">🛡️</div>
-            <div class="vl-brand-name">Secureguard</div>
+            <div class="vl-brand-name">SecureGuard</div>
         </div>
         <div class="vl-brand-sub">Sensitive Data Intelligence</div>
         """),
@@ -166,7 +166,7 @@ if uploaded_file is not None:
     else:
         st.markdown('<div class="vl-empty">No sensitive data detected in this document.</div>', unsafe_allow_html=True)
 
-    # ---------------- Compliance summary ----------------
+    # ---------------- Compliance summary (rule-based, always available) ----------------
     st.markdown(theme.section_head("03", "Compliance Summary"), unsafe_allow_html=True)
     summary_html = summary.replace("\n", "<br>")
     summary_html = re.sub(r"\bHIGH\b", '<span class="vl-t-high">HIGH</span>', summary_html)
@@ -175,6 +175,28 @@ if uploaded_file is not None:
     st.markdown(f'<div class="vl-terminal">{summary_html}</div>', unsafe_allow_html=True)
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.download_button("Download summary (.txt)", summary, file_name="compliance_summary.txt")
+
+    # ---------------- AI-generated summary (observations / risks / remediation) ----------------
+    st.markdown(theme.section_head("04", "AI-Generated Compliance Insights"), unsafe_allow_html=True)
+    if not GROQ_API_KEY:
+        st.markdown(
+            '<div class="vl-empty">AI-generated insights are not configured. An administrator needs '
+            'to set <code>GROQ_API_KEY</code> to enable this feature.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        with st.spinner("Generating compliance insights..."):
+            ai_summary = generate_ai_summary(GROQ_API_KEY, redacted, summary)
+        if ai_summary:
+            ai_html = ai_summary.replace("\n", "<br>")
+            ai_html = re.sub(r"##\s*(.+?)(<br>|$)", r'<span class="vl-t-head">\1</span><br>', ai_html)
+            st.markdown(f'<div class="vl-terminal">{ai_html}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div class="vl-empty">Could not generate AI insights right now — showing the '
+                'rule-based summary above instead.</div>',
+                unsafe_allow_html=True,
+            )
 
     # ---------------- Redacted preview ----------------
     with st.expander("Preview redacted document (this is what the LLM sees)"):
@@ -185,7 +207,7 @@ if uploaded_file is not None:
         )
 
     # ---------------- Q&A ----------------
-    st.markdown(theme.section_head("04", "Ask About This Document"), unsafe_allow_html=True)
+    st.markdown(theme.section_head("05", "Ask About This Document"), unsafe_allow_html=True)
 
     if not GROQ_API_KEY:
         st.markdown(
@@ -211,11 +233,7 @@ if uploaded_file is not None:
 
 else:
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    cats_html = "".join(
-        f'<span class="vl-risk-pill" style="background:{theme.RISK_COLORS[r]}22; color:{theme.RISK_COLORS[r]}; margin:3px 6px 3px 0;">{c}</span>'
-        for c, r in RISK_LEVELS.items()
-    )
     st.markdown(
-        f'<div class="vl-empty">Upload a PDF, TXT, or CSV file to begin.<br><br>{cats_html}</div>',
+        '<div class="vl-empty">Upload a PDF, TXT, or CSV file to begin.</div>',
         unsafe_allow_html=True,
     )

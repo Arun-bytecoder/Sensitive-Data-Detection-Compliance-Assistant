@@ -4,7 +4,6 @@ An AI-powered app that scans uploaded documents (PDF / TXT / CSV) for sensitive
 information, classifies it by risk level, generates a compliance summary, and
 lets you ask questions about the document.
 
-**Live demo:** `<PASTE YOUR STREAMLIT CLOUD LINK HERE AFTER DEPLOYING>`
 
 ---
 
