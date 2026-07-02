@@ -1,5 +1,5 @@
-import io
 import os
+import re
 import pandas as pd
 import pdfplumber
 import streamlit as st
@@ -7,17 +7,20 @@ from dotenv import load_dotenv
 
 from detector import scan_text, compute_risk_score, generate_summary, redact_text, RISK_LEVELS
 from llm_qa import ask_question
+import theme
 
-# Production-style credential loading: reads GROQ_API_KEY from a local .env
-# file (never committed -- see .gitignore) or from the deployment platform's
-# environment/secrets store. This is a FALLBACK ONLY -- if the user pastes
-# their own key in the sidebar, that one is used instead (see below). Using
-# each user's own key avoids one shared key's free-tier quota being spent by
-# everyone who tries the deployed demo.
+# ---------------------------------------------------------------------
+# Credentials: production pattern. GROQ_API_KEY is read ONLY from the
+# environment (.env locally, platform secrets when deployed). There is no
+# UI field for it -- end users never see or enter a key, same as any real
+# internal tool. If it's not configured, Q&A shows a quiet status instead
+# of asking the visitor to supply their own credential.
+# ---------------------------------------------------------------------
 load_dotenv()
-DEFAULT_GROQ_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-st.set_page_config(page_title="Sensitive Data Detection & Compliance Assistant", layout="wide")
+st.set_page_config(page_title="Secureguard — Sensitive Data Intelligence", layout="wide", page_icon="🛡️")
+st.markdown(theme.CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------
@@ -36,13 +39,11 @@ def extract_text(uploaded_file) -> str:
 
     if name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
-        # Flatten into text, keeping column context so a scan can still work
         rows = []
         for _, row in df.iterrows():
             rows.append(" | ".join(f"{col}: {val}" for col, val in row.items()))
         return "\n".join(rows)
 
-    # .txt or anything else plain-text
     raw = uploaded_file.read()
     if isinstance(raw, bytes):
         return raw.decode("utf-8", errors="ignore")
@@ -50,30 +51,76 @@ def extract_text(uploaded_file) -> str:
 
 
 # ---------------------------------------------------------------------
-# Sidebar
+# Sidebar — system status, not a credentials form
 # ---------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ Settings")
-    groq_key = st.text_input(
-        "Groq API key (for Q&A only)", type="password",
-        value=DEFAULT_GROQ_KEY,
-        help="Free key from console.groq.com. Loaded from a local .env if "
-             "present, otherwise paste your own. Only used to answer "
-             "questions about the document -- raw sensitive data is never "
-             "sent to it."
-    )
-    st.markdown("---")
     st.markdown(
-        "**Privacy note:** All detection happens locally with regex rules. "
-        "The document is never uploaded anywhere. If you use the Q&A feature, "
-        "only a *redacted* version of the text (sensitive values replaced "
-        "with tags) is sent to the LLM."
+        theme.clean("""
+        <div class="vl-brand">
+            <div class="vl-brand-mark">🛡️</div>
+            <div class="vl-brand-name">Secureguard</div>
+        </div>
+        <div class="vl-brand-sub">Sensitive Data Intelligence</div>
+        """),
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
+
+    st.markdown(
+        theme.clean(f"""
+        <div class="vl-status-row">
+            <span class="vl-status-label"><span class="vl-dot" style="background:#3ECF8E;"></span>Detection engine</span>
+            <span class="vl-status-pill vl-pill-on">ONLINE</span>
+        </div>
+        <div class="vl-status-row">
+            <span class="vl-status-label"><span class="vl-dot" style="background:{'#3ECF8E' if GROQ_API_KEY else '#7C8695'};"></span>Document Q&A</span>
+            <span class="vl-status-pill {'vl-pill-on' if GROQ_API_KEY else 'vl-pill-off'}">{'CONFIGURED' if GROQ_API_KEY else 'NOT CONFIGURED'}</span>
+        </div>
+        """),
+        unsafe_allow_html=True,
     )
 
-st.title("🔒 Sensitive Data Detection & Compliance Assistant")
-st.caption("Upload a document → detect sensitive data → get a risk-classified compliance summary → ask questions about it.")
+    st.markdown(
+        theme.clean("""
+        <div class="vl-sidebar-note">
+        <b>How this works</b><br>
+        Detection runs entirely with local pattern rules — nothing is uploaded
+        to a server. If document Q&A is enabled, only a <b>redacted</b> copy
+        of the text (sensitive values replaced with tags) is ever sent to the
+        language model.
+        </div>
+        """),
+        unsafe_allow_html=True,
+    )
 
-uploaded_file = st.file_uploader("Upload a document", type=["pdf", "txt", "csv"])
+    if not GROQ_API_KEY:
+        st.markdown(
+            theme.clean("""
+            <div class="vl-sidebar-note" style="margin-top:10px;">
+            <b>For administrators</b><br>
+            Set <code>GROQ_API_KEY</code> in a local <code>.env</code> file or
+            as a platform secret to enable Q&A. Free key at
+            console.groq.com.
+            </div>
+            """),
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------
+# Hero
+# ---------------------------------------------------------------------
+st.markdown(
+    theme.clean("""
+    <div class="vl-hero-eyebrow"><div class="vl-scan-bar"></div>PATTERN-BASED DETECTION · POC</div>
+    <div class="vl-hero-title">Sensitive Data & Compliance Scan</div>
+    <div class="vl-hero-sub">Upload a document to detect identity, financial, and credential data,
+    get a risk-classified compliance summary, and ask questions about what it contains.</div>
+    """),
+    unsafe_allow_html=True,
+)
+
+uploaded_file = st.file_uploader("Upload a document", type=["pdf", "txt", "csv"], label_visibility="collapsed")
 
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -93,63 +140,82 @@ if uploaded_file is not None:
         redacted = redact_text(text, findings)
 
     # ---------------- Risk dashboard ----------------
-    st.subheader("📊 Risk Dashboard")
-    risk_color = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡", "CLEAN": "🟢"}
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Overall Risk", f"{risk_color[risk_report['overall_risk']]} {risk_report['overall_risk']}")
-    c2.metric("High Risk Items", risk_report["counts"]["HIGH"])
-    c3.metric("Medium Risk Items", risk_report["counts"]["MEDIUM"])
-    c4.metric("Low Risk Items", risk_report["counts"]["LOW"])
+    st.markdown(theme.section_head("01", "Risk Dashboard"), unsafe_allow_html=True)
+    st.markdown(theme.metric_cards(risk_report["overall_risk"], risk_report["counts"]), unsafe_allow_html=True)
 
     if risk_report["by_category"]:
-        st.bar_chart(risk_report["by_category"])
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        st.markdown(theme.category_bars(risk_report["by_category"], RISK_LEVELS), unsafe_allow_html=True)
 
     # ---------------- Findings table ----------------
-    st.subheader("🔍 Detected Sensitive Data")
+    st.markdown(theme.section_head("02", "Detected Sensitive Data"), unsafe_allow_html=True)
     if findings:
         df_findings = pd.DataFrame(
             [
-                {
-                    "Category": f.category,
-                    "Risk": f.risk,
-                    "Masked Value": f.masked,
-                    "Context": f.context,
-                }
+                {"Category": f.category, "Risk": f.risk, "Masked Value": f.masked, "Context": f.context}
                 for f in findings
             ]
         )
-        st.dataframe(df_findings, use_container_width=True)
-        show_raw = st.checkbox("⚠️ Show unmasked values (local only, use with caution)")
+        st.dataframe(df_findings, use_container_width=True, hide_index=True)
+        show_raw = st.checkbox("Show unmasked values (local only)")
         if show_raw:
             df_raw = pd.DataFrame(
                 [{"Category": f.category, "Risk": f.risk, "Raw Value": f.value} for f in findings]
             )
-            st.dataframe(df_raw, use_container_width=True)
+            st.dataframe(df_raw, use_container_width=True, hide_index=True)
     else:
-        st.success("No sensitive data detected in this document.")
+        st.markdown('<div class="vl-empty">No sensitive data detected in this document.</div>', unsafe_allow_html=True)
 
     # ---------------- Compliance summary ----------------
-    st.subheader("📝 Compliance Summary")
-    st.text(summary)
+    st.markdown(theme.section_head("03", "Compliance Summary"), unsafe_allow_html=True)
+    summary_html = summary.replace("\n", "<br>")
+    summary_html = re.sub(r"\bHIGH\b", '<span class="vl-t-high">HIGH</span>', summary_html)
+    summary_html = re.sub(r"\bMEDIUM\b", '<span class="vl-t-medium">MEDIUM</span>', summary_html)
+    summary_html = re.sub(r"\bLOW\b", '<span class="vl-t-low">LOW</span>', summary_html)
+    st.markdown(f'<div class="vl-terminal">{summary_html}</div>', unsafe_allow_html=True)
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.download_button("Download summary (.txt)", summary, file_name="compliance_summary.txt")
 
+    # ---------------- Redacted preview ----------------
+    with st.expander("Preview redacted document (this is what the LLM sees)"):
+        redacted_preview_html = theme.render_redacted_html(redacted[:4000]).replace("\n", "<br>")
+        st.markdown(
+            f'<div class="vl-terminal">{redacted_preview_html}</div>',
+            unsafe_allow_html=True,
+        )
+
     # ---------------- Q&A ----------------
-    st.subheader("💬 Ask Questions About This Document")
-    st.caption("Answers are generated from a REDACTED copy of the document — sensitive values are never sent to the LLM.")
+    st.markdown(theme.section_head("04", "Ask About This Document"), unsafe_allow_html=True)
 
-    question = st.text_input("Your question", placeholder="e.g. What kind of financial data does this document contain?")
-    if st.button("Ask") and question:
-        with st.spinner("Thinking..."):
-            answer = ask_question(groq_key, redacted, summary, question)
-        st.session_state.history.append((question, answer))
+    if not GROQ_API_KEY:
+        st.markdown(
+            '<div class="vl-empty">Document Q&A is not configured. An administrator needs to set '
+            '<code>GROQ_API_KEY</code> to enable this feature.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        question = st.text_input(
+            "Your question", placeholder="e.g. What kind of financial data does this document contain?",
+            label_visibility="collapsed",
+        )
+        if st.button("Ask") and question:
+            with st.spinner("Thinking..."):
+                answer = ask_question(GROQ_API_KEY, redacted, summary, question)
+            st.session_state.history.append((question, answer))
 
-    for q, a in reversed(st.session_state.history):
-        st.markdown(f"**Q: {q}**")
-        st.markdown(a)
-        st.markdown("---")
+        for q, a in reversed(st.session_state.history):
+            st.markdown(
+                theme.clean(f'<div class="vl-qa-card"><div class="vl-qa-q">{q}</div><div class="vl-qa-a">{a}</div></div>'),
+                unsafe_allow_html=True,
+            )
 
 else:
-    st.info("Upload a PDF, TXT, or CSV file to get started.")
-    with st.expander("What does this app detect?"):
-        for cat, risk in RISK_LEVELS.items():
-            st.markdown(f"- **{cat}** — `{risk}` risk")
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    cats_html = "".join(
+        f'<span class="vl-risk-pill" style="background:{theme.RISK_COLORS[r]}22; color:{theme.RISK_COLORS[r]}; margin:3px 6px 3px 0;">{c}</span>'
+        for c, r in RISK_LEVELS.items()
+    )
+    st.markdown(
+        f'<div class="vl-empty">Upload a PDF, TXT, or CSV file to begin.<br><br>{cats_html}</div>',
+        unsafe_allow_html=True,
+    )
